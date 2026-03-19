@@ -1,0 +1,13 @@
+# Ignore portal secrets and caches
+data/portal.json
+data/channels.json
+data/users_account.json
+
+# Logs & temp files
+*.log
+*.bak
+.DS_Store
+Thumbs.db
+
+# Sessions or tmp
+/tmp/

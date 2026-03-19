@@ -1,0 +1,12 @@
+# Disable directory listing
+Options -Indexes
+
+# Rewrite blocked file types to the PHP error handler
+RewriteEngine On
+
+# Allow fontawesome assets and logo to load
+RewriteRule ^fontawesome/ - [L]
+RewriteRule ^logo\.png$ - [L]
+
+# Block JSON and other sensitive files — route to PHP handler
+RewriteRule \.(json|sql|bak|env|log)$ forbidden.php [L]

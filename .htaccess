@@ -1,0 +1,13 @@
+# Disable directory listing
+Options -Indexes
+
+# Block direct access to engine and documentation
+<FilesMatch "^(StalkerLite\.php|README\.md|\.gitignore)$">
+    Order Allow,Deny
+    Deny from all
+</FilesMatch>
+
+# Handle 404s with the styled error page (relative path)
+ErrorDocument 404 error.php
+ErrorDocument 403 error.php
+ErrorDocument 500 error.php
