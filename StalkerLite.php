@@ -116,6 +116,26 @@ class StalkerLite {
              . '&token=&JsHttpRequest=1-xml';
 
         $res  = $this->curlGet($url);
+
+        // Fallback for portals that don't match the initial stalker_portal path guess
+        if ($res['code'] == 404) {
+            if (strpos($this->serverUrl, '/stalker_portal/') !== false) {
+                $this->serverUrl  = str_replace('/stalker_portal/', '/', $this->serverUrl);
+                $this->portalBase = str_replace('/stalker_portal/', '/', $this->portalBase);
+            } else {
+                $this->serverUrl  = str_replace('/server/load.php', '/stalker_portal/server/load.php', $this->serverUrl);
+                $this->portalBase = str_replace('/c/', '/stalker_portal/c/', $this->portalBase);
+            }
+            $this->headers = $this->makeHeaders();
+
+            // Rebuild URL and retry
+            $url = $this->serverUrl
+                 . '?type=stb&action=handshake&prehash='
+                 . urlencode($this->mac)
+                 . '&token=&JsHttpRequest=1-xml';
+            $res = $this->curlGet($url);
+        }
+
         if (!empty($res['error'])) {
             return ['success' => false, 'token' => '', 'error' => $res['error']];
         }
