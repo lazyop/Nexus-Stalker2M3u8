@@ -148,7 +148,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 savePortal($newPortal);
                 
                 // Auto-sync channels instantly
-                set_time_limit(300);
+                set_time_limit(180);
                 $chs = $stk->getChannels();
 
 
@@ -178,35 +178,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
 
-    // ── Sync channels (Manual)
+    // ── Sync channels (Manual) - Redirect to standalone sync script
     if ($action === 'sync_channels' && $portal) {
-        set_time_limit(300);
-        $stk = new StalkerLite(
-            $portal['url'],
-            $portal['mac'],
-            $portal['model'] ?? 'MAG250',
-            $portal['device'] ?? [],
-            $portal['token']  ?? ''
-        );
-
-
-        $chs = $stk->getChannels();
-
-
-        if (!empty($chs)) {
-            $data = [
-                'fetched_at' => date('Y-m-d H:i:s'),
-                'count'      => count($chs),
-                'channels'   => $chs,
-            ];
-            file_put_contents(CHANNELS_FILE, json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
-            $_SESSION['flash'] = ['type' => 'success', 'msg' => count($chs) . ' channels synced successfully.'];
-        } else {
-            $_SESSION['flash'] = ['type' => 'error', 'msg' => 'No channels received. Token may have expired — try reconnecting.'];
-        }
-
-
-        header("Location: " . $_SERVER['PHP_SELF']);
+        header("Location: sync.php");
         exit;
     }
 
