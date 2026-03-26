@@ -14,6 +14,7 @@ class StalkerLite {
     private array  $deviceInfo;
     private array  $headers;
     private string $token;
+    private bool   $tokenVerified = false;
 
     // ─── Constructor ───────────────────────────────────────────────────────────
     // $existingToken: pass a cached token to skip handshake entirely
@@ -59,12 +60,20 @@ class StalkerLite {
     private function makeDeviceInfo(array $x): array {
         $mac       = $this->mac;
         $sn        = strtoupper(md5($mac));
-        $snCut     = !empty($x['sn_cut'])     ? $x['sn_cut']     : substr($sn, 0, 13);
+        $snCut     = !empty($x['sn_cut'])     ? $x['sn_cut']     : (!empty($x['sn']) ? substr($x['sn'], 0, 13) : substr($sn, 0, 13));
         $deviceId  = !empty($x['device_id'])  ? $x['device_id']  : strtoupper(hash('sha256', $mac));
         $deviceId2 = !empty($x['device_id2']) ? $x['device_id2'] : $deviceId;
         $signature = !empty($x['signature'])  ? $x['signature']  : strtoupper(hash('sha256', $snCut . $mac));
 
-        return compact('mac', 'sn', 'snCut', 'deviceId', 'deviceId2', 'signature') + ['model' => $this->model];
+        return [
+            'mac'       => $mac,
+            'sn'        => $sn,
+            'snCut'     => $snCut,
+            'deviceId'  => $deviceId,
+            'deviceId2' => $deviceId2,
+            'signature' => $signature,
+            'model'     => $this->model
+        ];
     }
 
     // ─── Headers ───────────────────────────────────────────────────────────────
@@ -94,12 +103,13 @@ class StalkerLite {
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_HTTPHEADER     => $headers ?: $this->authHeaders(),
             CURLOPT_TIMEOUT        => $timeout,
-            CURLOPT_CONNECTTIMEOUT => 8,
+            CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS      => 5,
             CURLOPT_SSL_VERIFYPEER => false,
             CURLOPT_SSL_VERIFYHOST => false,
             CURLOPT_ENCODING       => '',
+            CURLOPT_USERAGENT      => 'Mozilla/5.0 (QtEmbedded; U; Linux; C)',
         ]);
         $body  = curl_exec($ch);
         $code  = curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -118,7 +128,7 @@ class StalkerLite {
         $res  = $this->curlGet($url);
 
         // Fallback for portals that don't match the initial stalker_portal path guess
-        if ($res['code'] == 404) {
+        if ($res['code'] == 404 || (empty($res['data']) && $res['code'] != 200)) {
             if (strpos($this->serverUrl, '/stalker_portal/') !== false) {
                 $this->serverUrl  = str_replace('/stalker_portal/', '/', $this->serverUrl);
                 $this->portalBase = str_replace('/stalker_portal/', '/', $this->portalBase);
@@ -136,8 +146,12 @@ class StalkerLite {
             $res = $this->curlGet($url);
         }
 
-        if (!empty($res['error'])) {
-            return ['success' => false, 'token' => '', 'error' => $res['error']];
+        if ($res['code'] == 429) {
+            return ['success' => false, 'token' => '', 'error' => 'Rate limited (HTTP 429). Please wait a few minutes and try again.'];
+        }
+
+        if (empty($res['data'])) {
+            return ['success' => false, 'token' => '', 'error' => 'Empty response from server (HTTP ' . $res['code'] . ')'];
         }
 
         $data  = @json_decode($res['data'], true);
@@ -161,6 +175,14 @@ class StalkerLite {
         if (empty($this->token)) return [];
 
         $di  = $this->deviceInfo;
+        $metrics = json_encode([
+            'mac'    => $di['mac'],
+            'sn'     => $di['sn'],
+            'model'  => $di['model'],
+            'type'   => 'STB',
+            'random' => bin2hex(random_bytes(8))
+        ]);
+
         $url = $this->serverUrl . '?' . http_build_query([
             'type'          => 'stb',
             'action'        => 'get_profile',
@@ -171,7 +193,7 @@ class StalkerLite {
             'device_id2'    => $di['deviceId2'],
             'signature'     => $di['signature'],
             'timestamp'     => time(),
-            'metrics'       => json_encode(['mac' => $di['mac'], 'sn' => $di['sn'], 'model' => $di['model'], 'type' => 'STB']),
+            'metrics'       => $metrics,
             'JsHttpRequest' => '1-xml',
         ]);
 
@@ -179,60 +201,59 @@ class StalkerLite {
         $data = @json_decode($res['data'], true);
         $js   = $data['js'] ?? $data ?? [];
 
+        if (empty($js)) return [];
+
         return [
-            'login'  => $js['login']               ?? '',
-            'id'     => (string)($js['id']          ?? ''),
-            'name'   => $js['name'] ?? $js['fname'] ?? '',
-            'expiry' => $js['expire_billing_date']  ?? ($js['phone'] ?? null),
-            'tariff' => is_array($js['tariff_plan'] ?? null) ? ($js['tariff_plan']['name'] ?? '') : '',
+            'login'    => $js['login']               ?? '',
+            'id'       => (string)($js['id']          ?? ''),
+            'name'     => $js['name'] ?? $js['fname'] ?? '',
+            'expiry'   => $js['expire_billing_date']  ?? ($js['phone'] ?? null),
+            'password' => $js['parent_password'] ?? $js['password'] ?? '',
+            'tariff'   => is_array($js['tariff_plan'] ?? null) ? ($js['tariff_plan']['name'] ?? '') : '',
         ];
     }
 
     // ─── Ensure Valid Token (handshake + profile if needed) ─────────────────────
     public function ensureToken(): bool {
+        if ($this->tokenVerified) return true;
+
         if (!empty($this->token)) {
             // Try a profile call to verify token is still valid
-            $di  = $this->deviceInfo;
-            $url = $this->serverUrl . '?' . http_build_query([
-                'type'          => 'stb',
-                'action'        => 'get_profile',
-                'hd'            => '1',
-                'sn'            => $di['snCut'],
-                'stb_type'      => $di['model'],
-                'device_id'     => $di['deviceId'],
-                'device_id2'    => $di['deviceId2'],
-                'signature'     => $di['signature'],
-                'timestamp'     => time(),
-                'metrics'       => json_encode(['mac' => $di['mac'], 'sn' => $di['sn'], 'model' => $di['model'], 'type' => 'STB']),
-                'JsHttpRequest' => '1-xml',
-            ]);
-            $res  = $this->curlGet($url);
-            $data = @json_decode($res['data'], true);
-            $js   = $data['js'] ?? $data ?? [];
-            // If profile returns valid data, token is good
-            if (!empty($js['id']) || !empty($js['login']) || !empty($js['name'])) {
+            $profile = $this->getProfile();
+            if (!empty($profile['id'])) {
+                $this->tokenVerified = true;
                 return true;
             }
-            // Token expired — clear and re-handshake
             $this->token = '';
         }
 
         $hs = $this->handshake();
         if (!$hs['success']) return false;
 
-        // Call getProfile to initialize Stalker session
-        $this->getProfile();
-        return true;
+        // CRITICAL: Call getProfile to initialize Stalker session
+        $profile = $this->getProfile();
+        if (!empty($profile['id'])) {
+            $this->tokenVerified = true;
+            return true;
+        }
+
+        return false;
     }
 
     // ─── Full Connect (handshake + profile) ────────────────────────────────────
     public function connect(): array {
+        $this->tokenVerified = false;
         $hs = $this->handshake();
         if (!$hs['success']) {
             return ['success' => false, 'error' => $hs['error'] ?? 'Handshake failed', 'raw' => $hs['raw'] ?? ''];
         }
 
         $profile = $this->getProfile();
+        if (empty($profile)) {
+            return ['success' => false, 'error' => 'Handshake OK but Profile fetch failed', 'token' => $hs['token']];
+        }
+
+        $this->tokenVerified = true;
 
         return [
             'success'     => true,
@@ -246,9 +267,10 @@ class StalkerLite {
         ];
     }
 
+
     // ─── Get Genres ────────────────────────────────────────────────────────────
-    public function getGenres(): array {
-        if (!$this->ensureToken()) return [];
+    public function getGenres(bool $verify = true): array {
+        if ($verify && !$this->ensureToken()) return [];
 
         $endpoints = [
             '?type=itv&action=get_genres&JsHttpRequest=1-xml',
@@ -276,19 +298,41 @@ class StalkerLite {
     public function getChannels(): array {
         if (!$this->ensureToken()) return [];
 
-        $genreMap = $this->getGenres();
+        $genreMap = $this->getGenres(false);
 
         // Try get_all_channels first (most portals support this)
         $res  = $this->curlGet($this->serverUrl . '?type=itv&action=get_all_channels&JsHttpRequest=1-xml', [], 120);
         $data = @json_decode($res['data'], true);
+        
+        if (empty($data)) {
+            error_log("StalkerLite: get_all_channels returned invalid JSON or empty body.");
+        }
 
         $raw = [];
-        if (isset($data['js']['data']))           $raw = $data['js']['data'];
-        elseif (isset($data['data']))             $raw = $data['data'];
-        elseif (is_array($data['js'] ?? null))   $raw = array_values(array_filter($data['js'], 'is_array'));
+        if (isset($data['js']['data']) && is_array($data['js']['data'])) {
+            $raw = $data['js']['data'];
+        } elseif (isset($data['data']) && is_array($data['data'])) {
+            $raw = $data['data'];
+        } elseif (isset($data['js']) && is_array($data['js'])) {
+            // Check if 'js' itself is the channel list or if it's an object with channel keys
+            $first = reset($data['js']);
+            if (is_array($first)) {
+                if (isset($first['name']) || isset($first['cmd'])) {
+                    $raw = $data['js'];
+                } else {
+                    // Try to find any child that is a list of channels
+                    foreach ($data['js'] as $val) {
+                        if (is_array($val) && (isset($val[0]['name']) || isset($val[0]['cmd']))) {
+                            $raw = $val;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
-        // Fallback: paginated get_ordered_list (for portals that don't support get_all_channels)
         if (empty($raw)) {
+            error_log("StalkerLite: No channels in get_all_channels, trying fallback...");
             $raw = $this->fetchChannelsPaginated();
         }
 
