@@ -12,6 +12,8 @@
 
 require_once __DIR__ . '/StalkerLite.php';
 
+date_default_timezone_set('Asia/Kolkata');
+
 define('PORTAL_FILE',   __DIR__ . '/data/portal.json');
 define('CHANNELS_FILE', __DIR__ . '/data/channels.json');
 define('USERS_FILE',    __DIR__ . '/data/users_account.json');
